@@ -1,0 +1,645 @@
+var WWT_HRSD_MasterDataUtils = Class.create();
+WWT_HRSD_MasterDataUtils.prototype = Object.extendsObject(WWT_Logger, {
+
+    /**
+     * Desc: Intilalize script obejct to initiate Utility class member variables
+     * Input Params: HttpRequest, HttpResponse objects
+     * Return: Void
+     * Logic/Validation: Instantiates the Request/Response obejcts as member varilables, instantiates the Logger method etc
+     *
+     **/
+    initialize: function() {
+        //nothing to initialize, perhaps logger?
+    },
+
+    initializeRest: function(req, resp) {
+        //initiate Request/Response
+        this.request = req;
+        this.response = resp;
+    },
+
+    /**
+     * Desc: Public method to process Inbound JobData, Locations, Cost Center data load request. Reads inbound JSON object and populate the corresponding table
+     * Input Params: jobType {"JOB_DATA", "LOC_DATA", "DEPT_DATA"}
+     * Return: Job execution status code, including the count of records - Results/Status
+     * Logic/Validation:
+     *
+     **/
+    process: function(jobType) {
+        WWT_Logger.info("Inside process method " + jobType);
+        var result = {};
+        switch (jobType) {
+            case "LOCATION":
+                result = this._executeLocationData();
+                break;
+            case "TERM_PII_IMPORT":
+                result = this._executeTermPIIImport();
+                break;
+            case "USER_PII_IMPORT":
+                result = this._executeUserPIIImport();
+                break;
+            case "JOB_DATA":
+                result = this._executeJobImport();
+                break;
+            default:
+                result.status = "FAIL";
+                result.status_code = "WWT0000";
+                result.description = "*** ERROR. Unable to process " + jobType + "*** ";
+        }
+        return result;
+    },
+
+    /**
+     * Desc: Private method to process Inbound JobData, parses inbound JSON object and populate the corresponding Job table
+     * Input Params:
+     * Return: Job execution status code, including the count of records - Results/Status
+     * Logic/Validation:
+     *
+     **/
+    _executeJobImport: function() {
+
+        WWT_Logger.info("START : Job Import >>>>");
+
+        var answer = {}; // Prepare response payload. We will write success/error messages here later
+        var importSetRowJob = "x_wowit_wwt_hrsd_adp_job_data_imports";
+
+        // request passed in above will be the full message sent to us
+        // We only want the content from the body for now
+        var jobData = this.request.body.data;
+
+        var jobTitle = 'jobTitle';
+        var jobCode = 'jobCode';
+
+        try {
+
+            WWT_Logger.info("Script Include importUtils is creating GlideRecord to insert onto job Import Set Row");
+
+            for (var i = 0; i < jobData.length; i++) {
+
+                if (gs.nil(jobData[i][jobCode]) || gs.nil(jobData[i][jobTitle])) {
+                    answer.http_status = "400";
+                    answer.status_message = 'Request Rejected: We expected to see nodes for ' + jobTitle + ' or ' + jobCode + ' but those were not found. Please confirm before resending';
+                    WWT_Logger.error(JSON.stringify(answer));
+                    return answer;
+                }
+
+                var jobIn = new GlideRecord(importSetRowJob);
+
+                //TODO: LOOP THE JSON OBJECT TO CREATE MULTIPLE RECORDS
+
+                jobIn.initialize();
+
+                for (var key in jobData[i]) {
+                    jobIn[key.toLowerCase()] = jobData[i][key];
+                }
+
+                // Send the Job Data to the User Import Set Row Table
+                var resultSysID = jobIn.insert();
+
+                // Now we lookup the record that was just created moments ago so we can check how the Transform Map went.
+                var importSetRow = new GlideRecord(importSetRowJob);
+                importSetRow.get(resultSysID);
+
+                WWT_Logger.info("Import Set Row fetched " + importSetRow.sys_id);
+
+                // We will look to see what happened during transform and write the state of the import down
+                var importSetRowStatus = importSetRow.sys_import_state;
+
+                WWT_Logger.info("Import Set Row Status " + importSetRowStatus);
+
+                //  Package up all clear response
+                if (importSetRowStatus == 'ignored' || importSetRowStatus == 'ignore') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Data provided matched local data set, update was ignored for " + jobIn.sys_import_set.number;
+                } else if (importSetRowStatus == 'updated') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Account updated for " + jobIn.sys_import_set.number;
+                } else if (importSetRowStatus == 'inserted') {
+                    answer.http_status = "201";
+                    answer.status_message = "User payload accepted and processed. Profile created for " + jobIn.sys_import_set.number;
+
+                } else if (importSetRowStatus == 'error') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Data provided matched local data set, update was errored for " + jobIn.sys_import_set.number;
+
+                } else {
+                    var msg = 'Unexpected import result during user transform: ' + importSetRow.sys_import_state.toString() + ' ' + importSetRow.sys_row_error.error_message.toString() + ' and error code is ' + importSetRow.sys_row_error.error_code.toString() + ' UserId of user ' + importSetRow.unique_identifier;
+                    answer.http_status = "500";
+                    answer.status_message = msg;
+                }
+
+            }
+
+            WWT_Logger.info('Script Include completing with: ' + JSON.stringify(answer));
+
+            //this.resp.setContentType('application/json'); // Tells the sending system what form our response will be formatted in
+            //this.resp.setStatus(answer.http_status);
+
+            WWT_Logger.info("END : Job Import <<<<");
+
+            //var writer = response.getStreamWriter();
+            //writer.writeString(JSON.stringify(answer));
+            return answer;
+
+        } catch (ex) {
+            answer.http_status = '500';
+            answer.status_message = 'Internal ServiceNow Error: ' + ex;
+            WWT_Logger.info(JSON.stringify(answer));
+            return answer;
+        }
+
+    },
+
+    /**
+     * Desc: Private method to process Inbound JobData, parses inbound JSON object and populate the corresponding Job table
+     * Input Params:
+     * Return: Job execution status code, including the count of records - Results/Status
+     * Logic/Validation:
+     *
+     **/
+    _executeLocationData: function() {
+
+    },
+
+    /**
+     * Desc: Pricate method to process inbound User data, map the dato into a Import set and trigger transform synchronously
+     * Input Params:
+     * Return: Job execution status code, including the User data processing - Results/Status
+     * Logic/Validation:
+     *
+     **/
+    _executeUserPIIImport: function() {
+        WWT_Logger.info("START : User Import >>>>");
+
+        var answer = {}; // Prepare response payload. We will write success/error messages here later
+        var importSetRowUser = "x_wowit_wwt_hrsd_adp_imp_pii_data";
+
+        // request passed in above will be the full message sent to us
+        // We only want the content from the body for now
+        var usrData = this.request.body.data;
+
+        // Because we are receiving JSON formatted data, lets print it out to the logs
+        // For readability, you may need to JSON.parse(data) first, then stringify it
+        WWT_Logger.info("Our Enpoint Received Body Data: " + JSON.stringify(usrData));
+
+        //check for critical elements to perform the job, Employee ID & Jobcode
+        var empId = 'employeeId';
+        var jobCode = 'jobCode';
+
+        try {
+
+            //if critical data is missing, cancel the process and generate the Error
+            /*if (gs.nil(usrData[empId]) || gs.nil(usrData[jobCode])) {
+                answer.http_status = "400";
+                answer.status_message = 'Request Rejected: We expected to see nodes for ' + empId + ' or ' + jobCode + ' but those were not found. Please confirm before resending';
+                WWT_Logger.error(JSON.stringify(answer));
+                return answer;
+            }*/
+
+            WWT_Logger.info("Script Include importUtils is creating GlideRecord to insert onto user Import Set Row");
+
+            for (var i = 0; i < usrData.length; i++) {
+
+                if (gs.nil(usrData[i][empId]) || gs.nil(usrData[i][jobCode])) {
+                    answer.http_status = "400";
+                    answer.status_message = 'Request Rejected: We expected to see nodes for ' + empId + ' or ' + jobCode + ' but those were not found. Please confirm before resending';
+                    WWT_Logger.error(JSON.stringify(answer));
+                    return answer;
+                }
+
+                var userIn = new GlideRecord(importSetRowUser);
+
+                //TODO: LOOP THE JSON OBJECT TO CREATE MULTIPLE RECORDS
+
+                userIn.initialize();
+
+                for (var key in usrData[i]) {
+                    userIn.wwthiredate = usrData['wwthiredate'];
+					//userIn.first_name = usrData[i]['firstName'];
+
+                    userIn[key.toLowerCase()] = usrData[i][key];
+                }
+
+                /*userIn.bonusandcommission = usrData['bonusAndCommission'];
+                userIn.cleancellphonewithcountrycode = usrData['cleanCellPhoneWithCountryCode'];
+                userIn.cleanhomephonewithcountrycode = usrData['cleanHomePhoneWithCountryCode'];
+                userIn.currencycode = usrData['currencyCode'];
+                userIn.description = usrData['description'];
+                userIn.employeeid = usrData['employeeId'];
+                userIn.first_name = usrData['firstName'];
+                userIn.lastname = usrData['lastName'];
+                userIn.gender = usrData['gender'];
+                userIn.age = usrData['age'];
+                userIn.raceethnicity = usrData['raceEthnicity'];
+                userIn.homeaddresscity = usrData['homeAddressCity'];
+                userIn.homeaddresscountry = usrData['homeAddressCountry'];
+                userIn.homeaddressline1 = usrData['homeAddressLine1'];
+                userIn.homeaddressline2 = usrData['homeAddressLine2'];
+                userIn.homeaddressline3 = usrData['homeAddressLine3'];
+                userIn.homeaddressstate = usrData['homeAddressState'];
+                userIn.homeaddresszippostal = usrData['homeAddressZipPostal'];
+                userIn.homeaddresscountry = usrData['hourlyrate'];
+                userIn.jobcode = usrData['jobCode'];
+                userIn.knownasfirstname = usrData['knownAsFirstName'];
+                userIn.maritalstatus = usrData['maritalStatus'];
+                userIn.paytype = usrData['payType'];
+                userIn.paygroup = usrData['payGroup'];
+                userIn.hourlyrate = usrData['hourlyRate'];
+                userIn.currencycode = usrData['currencyCode'];
+                userIn.annualrate = usrData['annualRate'];
+                userIn.plannedtotalcomp = usrData['plannedtotalcomp'];
+                userIn.personalemail = usrData['personalEmail'];
+                userIn.plannedtotalcomp = usrData['plannedTotalComp'];
+                userIn.raceethnicity = usrData['raceEthnicity'];
+                userIn.ssn = usrData['ssn'];
+                userIn.birthdate = usrData['birthDate'];*/
+
+                //read the user record 
+                var userObj = this._getUserRec(usrData[i]['employeeId']);
+                if (gs.nil(userObj)) {
+                    userIn.user = userObj;
+                }
+
+                // Send the Profile Data to the User Import Set Row Table
+                var resultSysID = userIn.insert();
+
+                // Now we lookup the record that was just created moments ago so we can check how the Transform Map went.
+                var importSetRow = new GlideRecord(importSetRowUser);
+                importSetRow.get(resultSysID);
+
+                WWT_Logger.info("Import Set Row fetched " + importSetRow.sys_id);
+
+                // We will look to see what happened during transform and write the state of the import down
+                var importSetRowStatus = importSetRow.sys_import_state;
+
+                WWT_Logger.info("Import Set Row Status " + importSetRowStatus);
+
+                //  Package up all clear response
+                if (importSetRowStatus == 'ignored' || importSetRowStatus == 'ignore') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Data provided matched local data set, update was ignored for " + userIn.sys_import_set.number;
+                } else if (importSetRowStatus == 'updated') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Account updated for " + userIn.sys_import_set.number;
+                } else if (importSetRowStatus == 'inserted') {
+                    answer.http_status = "201";
+                    answer.status_message = "User payload accepted and processed. Profile created for " + userIn.sys_import_set.number;
+
+                } else if (importSetRowStatus == 'error') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Data provided matched local data set, update was errored for " + userIn.sys_import_set.number;
+
+                } else {
+                    var msg = 'Unexpected import result during user transform: ' + importSetRow.sys_import_state.toString() + ' ' + importSetRow.sys_row_error.error_message.toString() + ' and error code is ' + importSetRow.sys_row_error.error_code.toString() + ' UserId of user ' + importSetRow.unique_identifier;
+                    answer.http_status = "500";
+                    answer.status_message = msg;
+                }
+
+            }
+
+            WWT_Logger.info('Script Include completing with: ' + JSON.stringify(answer));
+
+            //this.resp.setContentType('application/json'); // Tells the sending system what form our response will be formatted in
+            //this.resp.setStatus(answer.http_status);
+
+            WWT_Logger.info("END : User Import <<<<");
+
+            //var writer = response.getStreamWriter();
+            //writer.writeString(JSON.stringify(answer));
+            return answer;
+
+        } catch (ex) {
+            answer.http_status = '500';
+            answer.status_message = 'Internal ServiceNow Error: ' + ex;
+            WWT_Logger.info(JSON.stringify(answer));
+            return answer;
+        }
+    },
+
+    /**
+     * Desc: Pricate method to process inbound User data, map the dato into a Import set and trigger transform synchronously
+     * Input Params:
+     * Return: Job execution status code, including the User data processing - Results/Status
+     * Logic/Validation:
+     *
+     **/
+    _executeTermPIIImport: function() {
+        WWT_Logger.info("START : Term Import >>>>");
+
+        var answer = {}; // Prepare response payload. We will write success/error messages here later
+        var importSetRowTerm = "x_wowit_wwt_hrsd_adp_pii_termination_data";
+
+        // request passed in above will be the full message sent to us
+        // We only want the content from the body for now
+        var trmData = this.request.body.data;
+
+        // Because we are receiving JSON formatted data, lets print it out to the logs
+        // For readability, you may need to JSON.parse(data) first, then stringify it
+        WWT_Logger.info("Our Enpoint Received Body Data: " + JSON.stringify(trmData));
+
+        //check for critical elements to perform the Employee ID
+        var empId = 'employeeid';
+
+        try {
+
+            //if critical data is missing, cancel the process and generate the Error
+            /*if (gs.nil(trmData[empId])) {
+                answer.http_status = "400";
+                answer.status_message = 'Request Rejected: We expected to see nodes for ' + empId + ' or ' + jobCode + ' but those were not found. Please confirm before resending';
+                WWT_Logger.error(JSON.stringify(answer));
+                return answer;
+            }*/
+
+            WWT_Logger.info("Script Include importUtils is creating GlideRecord to create cases associated to Import Set Row");
+
+            for (var i = 0; i < trmData.length; i++) {
+
+                if (gs.nil(trmData[i][empId])) {
+                    answer.http_status = "400";
+                    answer.status_message = 'Request Rejected: We expected to see nodes for ' + empId + ' but those were not found. Please confirm before resending';
+                    WWT_Logger.error(JSON.stringify(answer));
+                    return answer;
+                }
+
+                var termIn = new GlideRecord(importSetRowTerm);
+
+                //TODO: LOOP THE JSON OBJECT TO CREATE MULTIPLE RECORDS
+
+                termIn.initialize();
+
+                for (var key in trmData[i]) {
+                    //termIn.wwthiredate =  trmData[i]['wwthiredate'];
+                    termIn[key.toLowerCase()] = trmData[i][key];
+                }
+
+//                 //read the user record 
+//                 var termObj = this._getUserRec(usrData[i]['employeeId']);
+//                 if (gs.nil(termObj)) {
+//                     termIn.user = termObj;
+//                 }
+
+                // Send the Profile Data to the User Import Set Row Table
+                var resultSysID = termIn.insert();
+
+                // Now we lookup the record that was just created moments ago so we can check how the Transform Map went.
+                var importSetRow = new GlideRecord(importSetRowTerm);
+                importSetRow.get(resultSysID);
+
+                WWT_Logger.info("Import Set Row fetched " + importSetRow.sys_id);
+
+                // We will look to see what happened during transform and write the state of the import down
+                var importSetRowStatus = importSetRow.sys_import_state;
+
+                WWT_Logger.info("Import Set Row Status " + importSetRowStatus);
+
+                //  Package up all clear response
+				
+                if (importSetRowStatus == 'ignored' || importSetRowStatus == 'ignore') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Data provided matched local data set, update was ignored for " + termIn.sys_import_set.number;
+                } else if (importSetRowStatus == 'updated') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Account updated for " + termIn.sys_import_set.number;
+                } else if (importSetRowStatus == 'inserted') {
+                    answer.http_status = "201";
+                    answer.status_message = "User payload accepted and processed. Termination case created for " + termIn.sys_import_set.number;
+
+                } else if (importSetRowStatus == 'error') {
+                    answer.http_status = "200";
+                    answer.status_message = "User payload accepted and processed. Data provided matched local data set, update was errored for " + termIn.sys_import_set.number;
+
+                } else {
+                    var msg = 'Unexpected import result during user transform: ' + importSetRow.sys_import_state.toString() + ' ' + importSetRow.sys_row_error.error_message.toString() + ' and error code is ' + importSetRow.sys_row_error.error_code.toString() + ' UserId of user ' + importSetRow.unique_identifier;
+                    answer.http_status = "500";
+                    answer.status_message = msg;
+                }
+
+            }
+
+            WWT_Logger.info('Script Include completing with: ' + JSON.stringify(answer));
+
+            //this.resp.setContentType('application/json'); // Tells the sending system what form our response will be formatted in
+            //this.resp.setStatus(answer.http_status);
+
+            WWT_Logger.info("END : Term Import <<<<");
+
+            //var writer = response.getStreamWriter();
+            //writer.writeString(JSON.stringify(answer));
+            return answer;
+
+        } catch (ex) {
+            answer.http_status = '500';
+            answer.status_message = 'Internal ServiceNow Error: ' + ex;
+            WWT_Logger.info(JSON.stringify(answer));
+            return answer;
+        }
+    },
+
+
+
+    /**
+     * Desc: Private method to process Inbound JobData, parses inbound JSON object and populate the corresponding Job table
+     * Input Params:
+     * Return: Job execution status code, including the count of records - Results/Status
+     * Logic/Validation:
+     *
+     **/
+    _executeDepartmentData: function() {
+
+    },
+
+    /**
+     * Desc: Private method to retrieve User object based on ADP Employee number. 
+     * Input Params: {empNbr}
+     * Return: Returns Active User Object
+     * Logic/Validation:
+     *
+     **/
+    _getUserRec: function(empNbr) {
+        var user = new GlideRecord("sys_user");
+        user.addEncodedQuery("employee_number=" + empNbr);
+        user.addActiveQuery();
+        user.query();
+
+        WWT_Logger.info("User record found " + user.getRowCount());
+
+        if (user.next()) {
+            return user;
+        }
+    },
+
+    /**
+     * Desc: Public method to be called from Transform scripts to update User object based on Employee number
+     * Input Params: {empId, gender}
+     * Return: {void}
+     * Logic/Validation: Updates the User gender if the existing value is different than received ADP value
+     *
+     **/
+    updateUserGenderInfo: function(empId, gender, knownAsFirstName, lastName) {
+        if (!gs.nil(empId)) {
+            var isUpdate = false;
+            var usrObj = this._getUserRec(empId);
+
+            if (usrObj.gender != gender) {
+                usrObj.gender = gender;
+                isUpdate = true;
+            }
+
+            if (usrObj.first_name != knownAsFirstName) {
+                usrObj.first_name = knownAsFirstName;
+                isUpdate = true;
+            }
+
+            if (usrObj.last_name != lastName) {
+                usrObj.last_name = lastName;
+                isUpdate = true;
+            }
+
+            if (isUpdate) {
+                usrObj.update();
+            }
+        }
+    },
+
+    /**
+     * Desc: Public method to be called from Transform scripts to update User object based on Employee number
+     * Input Params: {empId, gender}
+     * Return: {void}
+     * Logic/Validation: Updates the User gender if the existing value is different than received ADP value
+     *
+     **/
+    updateEmpBonus: function(empId, bonusAmt, currencyCode) {
+
+        if (!gs.nil(empId)) {
+            var isUpdate = false;
+            var usrObj = this._getUserRec(empId);
+
+            var bonus = new GlideRecord("sn_hr_core_bonus");
+            bonus.addEncodedQuery("employee.employee_number=" + empId);
+            bonus.query();
+
+            WWT_Logger.info("User Bonus record found " + bonus.getRowCount());
+
+            if (gs.nil(currencyCode)) {
+                currencyCode = "USD";
+            }
+
+            if (bonus.next()) {
+                if (bonus.amount != bonusAmt) {
+                    //current.field.setValue(currencyCode + ";" + convertedValue);
+                    bonus.amount.setDisplayValue(currencyCode + ";" + bonusAmt);
+                    //bonus.date = new GlideDateTime().getDisplayValue();  //not sure if Date must be for insert or update
+                    bonus.update();
+                }
+            } else {
+                //create a new record based on Employee
+                var bonusRec = new GlideRecord("sn_hr_core_bonus");
+                bonusRec.initialize();
+                bonusRec.employee = usrObj.getUniqueValue();
+                bonusRec.amount.setDisplayValue(currencyCode + ";" + bonusAmt);
+                bonusRec.date = new GlideDateTime().getDisplayValue();
+                bonusRec.insert();
+            }
+        }
+    },
+
+    /**
+     * Desc: Public method to be called from Transform scripts to update Emp Annual Rate based on Employee number
+     * Input Params: {empId, annualRate}
+     * Return: {void}
+     * Logic/Validation: Updates the User gender if the existing value is different than received ADP value
+     *
+     **/
+    updateAnnualRate: function(empId, annualRate, payType, hourlyRate, currencyCode) {
+        WWT_Logger.info("Annual Rate updateAnnualRate method called for " + empId + " and annualRate " + annualRate);
+
+        if (!gs.nil(empId) && !gs.nil(annualRate)) {
+
+
+            var rate = new GlideRecord("sn_hr_core_salary");
+            rate.addEncodedQuery("employee.employee_number=" + empId);
+            rate.query();
+
+            WWT_Logger.info("Annual Rate record found " + rate.getRowCount());
+
+            if (gs.nil(currencyCode)) {
+                currencyCode = "USD";
+            }
+
+            if (rate.next()) {
+
+
+
+                if (payType.toLowerCase() == "salaried") {
+                    rate.rate.setDisplayValue(currencyCode + ";" + annualRate);
+                } else {
+                    rate.rate.setDisplayValue(currencyCode + ";" + hourlyRate);
+                }
+
+                if (!gs.nil(payType)) {
+                    if (payType.toLowerCase() == "salaried") {
+                        rate.type = "annual";
+                        // rate.setDisplayValue(currencyCode + ";" + annualRate);
+                    } else {
+                        rate.type = "hourly";
+                        // rate.setDisplayValue(currencyCode + ";" + hourlyRate);
+                    }
+                }
+
+                rate.update();
+                this._updateHrProfileSalary(empId, rate);
+
+
+
+            } else {
+                //no Employee record found, so create one and insert rate
+                //First get the user object based on Employee number, of no User found with the Employee Number then skip the insertion
+                var usrObj = this._getUserRec(empId);
+
+                if (!gs.nil(usrObj)) {
+                    var annRate = new GlideRecord("sn_hr_core_salary");
+                    annRate.initialize();
+
+                    annRate.employee = usrObj.getUniqueValue();
+                    annRate.date = new GlideDate().getDisplayValue();
+
+                    if (!gs.nil(payType)) {
+                        if (payType.toLowerCase() == "salaried") {
+                            annRate.type = "annual";
+                            annRate.rate.setDisplayValue(currencyCode + ";" + annualRate);
+                        } else {
+                            annRate.type = "hourly";
+                            annRate.rate.setDisplayValue(currencyCode + ";" + hourlyRate);
+                        }
+                    }
+
+                    annRate.insert();
+                    this._updateHrProfileSalary(empId, annRate);
+                }
+            }
+        }
+    },
+
+    _updateHrProfileSalary: function(empId, rate) {
+        var hrProfile = new GlideRecord("sn_hr_core_profile");
+        hrProfile.addEncodedQuery("user.employee_number=", empId);
+        hrProfile.query();
+        if (hrProfile.next()) {
+            hrProfile.u_salary = rate.sys_id;
+            hrProfile.update();
+        }
+
+    },
+    /**
+     * Desc: Test Logger
+     * Input Params: Log message to be print
+     * Return: Prints to system or applicaiton log
+     * Logic/Validation: 
+     *
+     **/
+    logInfo: function(msg) {
+        WWT_Logger.info("**** Log Test ******");
+    },
+
+    type: 'WWT_HRSD_MasterDataUtils'
+});
