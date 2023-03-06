@@ -214,9 +214,7 @@ WWT_HRSD_MasterDataUtils.prototype = Object.extendsObject(WWT_Logger, {
                 userIn.initialize();
 
                 for (var key in usrData[i]) {
-                    userIn.wwthiredate = usrData['wwthiredate'];
-					//userIn.first_name = usrData[i]['firstName'];
-
+                    userIn.wwthiredate = usrData[i]['wwthiredate'];
                     userIn[key.toLowerCase()] = usrData[i][key];
                 }
 
